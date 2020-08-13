@@ -2023,11 +2023,15 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       checkNotNull(key);
       checkNotNull(loader);
       try {
+        // count记录当前segment中存活的缓存个数
         if (count != 0) { // read-volatile
           // don't call getLiveEntry, which would ignore loading values
+          // 其实这一句就已经获取到了value值，下面的代码进行了过期判断等操作
           ReferenceEntry<K, V> e = getEntry(key, hash);
           if (e != null) {
             long now = map.ticker.read();
+            // 判断是否过期
+            // >>>>>>>>>
             V value = getLiveValue(e, now);
             if (value != null) {
               recordRead(e, now);
@@ -2052,6 +2056,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         }
         throw ee;
       } finally {
+        // 消费队列中的数据
         postReadCleanup();
       }
     }
@@ -2573,6 +2578,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
     void tryExpireEntries(long now) {
       if (tryLock()) {
         try {
+          // >>>>>>>>>
           expireEntries(now);
         } finally {
           unlock();
@@ -2587,6 +2593,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
       ReferenceEntry<K, V> e;
       while ((e = writeQueue.peek()) != null && map.isExpired(e, now)) {
+        // >>>>>>>>> removeEntry
         if (!removeEntry(e, e.getHash(), RemovalCause.EXPIRED)) {
           throw new AssertionError();
         }
@@ -2608,6 +2615,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         statsCounter.recordEviction();
       }
       if (map.removalNotificationQueue != DISCARDING_QUEUE) {
+        // 加入队列  get方法的finally中postReadCleanup()方法消费该队列
         RemovalNotification<K, V> notification = RemovalNotification.create(key, value, cause);
         map.removalNotificationQueue.offer(notification);
       }
@@ -2713,6 +2721,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
 
       if (map.isExpired(entry, now)) {
+        // >>>>>>>>>>
         tryExpireEntries(now);
         return null;
       }
@@ -3228,6 +3237,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         V value,
         ValueReference<K, V> valueReference,
         RemovalCause cause) {
+      // >>>>>>>>>
       enqueueNotification(key, hash, value, valueReference.getWeight(), cause);
       writeQueue.remove(entry);
       accessQueue.remove(entry);
@@ -3386,6 +3396,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
     @VisibleForTesting
     @GuardedBy("this")
     boolean removeEntry(ReferenceEntry<K, V> entry, int hash, RemovalCause cause) {
+      // 获取当前缓存的总数量,自减一（前面获取了锁，所以线程安全）
       int newCount = this.count - 1;
       AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
       int index = hash & (table.length() - 1);
@@ -3394,6 +3405,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
         if (e == entry) {
           ++modCount;
+          // >>>>>>>>> removeValueFromChain
           ReferenceEntry<K, V> newFirst =
               removeValueFromChain(
                   first,
@@ -3405,6 +3417,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
                   cause);
           newCount = this.count - 1;
           table.set(index, newFirst);
+          // 删除并将更新的总数赋值到 count
           this.count = newCount; // write-volatile
           return true;
         }
@@ -3948,6 +3961,10 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
   V get(K key, CacheLoader<? super K, V> loader) throws ExecutionException {
     int hash = hash(checkNotNull(key));
+    // 采用了类似ConcurrentHashMap的方式，将映射表分为多个segment。
+    // segment之间可以并发访问，这样可以大大提高并发的效率，
+    // 使得并发冲突的可能性降低了（同时访问一个segment上的key时还是有可能冲突的
+    // >>>>>>>>> get
     return segmentFor(hash).get(key, hash, loader);
   }
 
@@ -3971,6 +3988,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
   }
 
   V getOrLoad(K key) throws ExecutionException {
+    // >>>>>>>>>
     return get(key, defaultLoader);
   }
 
@@ -4955,6 +4973,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
     @Override
     public V get(K key) throws ExecutionException {
+      // >>>>>>>>>
       return localCache.getOrLoad(key);
     }
 

@@ -108,6 +108,9 @@ public class CacheLoadingTest extends TestCase {
     assertEquals(0, stats.hitCount());
 
     Object key = new Object();
+
+    // Guava Cache实现原理 start
+    // >>>>>>>>> cache.get(key)  LocalLoadingCache
     assertSame(key, cache.get(key));
     stats = cache.stats();
     assertEquals(1, stats.missCount());
